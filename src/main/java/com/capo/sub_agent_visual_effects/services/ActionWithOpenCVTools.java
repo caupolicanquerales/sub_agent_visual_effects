@@ -30,6 +30,8 @@ public class ActionWithOpenCVTools {
     private final FeatureEdgeDetectionEngine featureEngine;
     private final OverlayEngine overlayEngine;
     private final StainEngine stainEngine;
+    private final RealisticBorderEngine realisticBorderEngine;
+    private final ProbabilisticBorderEngine probabilisticBorderEngine;
     private final ObjectMapper objectMapper;
 
     private static final Logger log = LoggerFactory.getLogger(ActionWithOpenCVTools.class);
@@ -43,17 +45,21 @@ public class ActionWithOpenCVTools {
             FeatureEdgeDetectionEngine featureEngine,
             OverlayEngine overlayEngine,
             StainEngine stainEngine,
+            RealisticBorderEngine realisticBorderEngine,
+            ProbabilisticBorderEngine probabilisticBorderEngine,
             ObjectMapper objectMapper) {
-        this.redisTemplate       = redisTemplate;
-        this.smoothingEngine     = smoothingEngine;
-        this.geometricEngine     = geometricEngine;
-        this.thresholdingEngine  = thresholdingEngine;
-        this.morphologicalEngine = morphologicalEngine;
-        this.colorSpaceEngine    = colorSpaceEngine;
-        this.featureEngine       = featureEngine;
-        this.overlayEngine       = overlayEngine;
-        this.stainEngine         = stainEngine;
-        this.objectMapper        = objectMapper;
+        this.redisTemplate              = redisTemplate;
+        this.smoothingEngine            = smoothingEngine;
+        this.geometricEngine            = geometricEngine;
+        this.thresholdingEngine         = thresholdingEngine;
+        this.morphologicalEngine        = morphologicalEngine;
+        this.colorSpaceEngine           = colorSpaceEngine;
+        this.featureEngine              = featureEngine;
+        this.overlayEngine              = overlayEngine;
+        this.stainEngine                = stainEngine;
+        this.realisticBorderEngine      = realisticBorderEngine;
+        this.probabilisticBorderEngine  = probabilisticBorderEngine;
+        this.objectMapper               = objectMapper;
     }
 
     @Tool(description = """
@@ -70,19 +76,23 @@ public class ActionWithOpenCVTools {
                     - 'morphological' : morphological operations
                     - 'colorspace'    : color space conversion operations
                     - 'detection'     : feature and edge detection operations
-                    - 'overlay'       : composite rendering operations (watermark, text stamp)
-                    - 'stain'         : organic substance stain rendering operations
+                    - 'overlay'         : composite rendering operations (watermark, text stamp)
+                    - 'stain'           : organic substance stain rendering operations
+                    - 'realisticborder'     : image-segmentation based realistic border rendering
+                    - 'probabilisticborder' : probability-density-driven border damage engine
                     """) String category,
             @ToolParam(description = """
                     The exact operation key (lower-case) to apply within the chosen category.
-                    smoothing     : blur | gaussian | median | bilateral | boxfilter | sqrboxfilter | filter2d | sepfilter2d | stackblur | pyrmeanshift | vignette | scratches | tornborder | wornedge
-                    geometric     : resize | flip | rotate | rotatearbitrary | translate | shear | warpaffine | warpperspective | getrectsub | linearpolar | logpolar | remap | undistort
-                    thresholding  : threshold | adaptivethreshold | inrange | floodfill | kmeans | connectedcomponents | distancetransform | watershed | grabcut
-                    morphological : erode | dilate | opening | closing | gradient | tophat | blackhat | hitmiss
-                    colorspace    : togray | graytobgr | swaprbchannels | tobgra | tobgr | tohsv | fromhsv | tohls | fromhls | tolab | fromlab | toluv | fromluv | toycrcb | fromycrcb | toyuv | fromyuv | toxyz | fromxyz | extractchannel | mergechannels
-                    detection     : canny | sobel | scharr | laplacian | prewitt | houghlines | houghcircles | harriscorners | shitomasi | contours | fast | orb
-                    overlay       : watermark
-                    stain         : stain
+                    smoothing       : blur | gaussian | median | bilateral | boxfilter | sqrboxfilter | filter2d | sepfilter2d | stackblur | pyrmeanshift | vignette | scratches | tornborder | wornedge
+                    geometric       : resize | flip | rotate | rotatearbitrary | translate | shear | warpaffine | warpperspective | getrectsub | linearpolar | logpolar | remap | undistort
+                    thresholding    : threshold | adaptivethreshold | inrange | floodfill | kmeans | connectedcomponents | distancetransform | watershed | grabcut
+                    morphological   : erode | dilate | opening | closing | gradient | tophat | blackhat | hitmiss
+                    colorspace      : togray | graytobgr | swaprbchannels | tobgra | tobgr | tohsv | fromhsv | tohls | fromhls | tolab | fromlab | toluv | fromluv | toycrcb | fromycrcb | toyuv | fromyuv | toxyz | fromxyz | extractchannel | mergechannels
+                    detection       : canny | sobel | scharr | laplacian | prewitt | houghlines | houghcircles | harriscorners | shitomasi | contours | fast | orb
+                    overlay         : watermark
+                    stain                : stain
+                    realisticborder      : segmentborder
+                    probabilisticborder  : probabilisticborder
                     """) String operationName,
             @ToolParam(description = """
                     JSON object of parameters for the chosen operation. Use {} for all defaults.
@@ -150,8 +160,10 @@ public class ActionWithOpenCVTools {
                 case "morphological" -> morphologicalEngine.applyOperation(operationName, src, params);
                 case "colorspace"    -> colorSpaceEngine.applyConversion(operationName, src, params);
                 case "detection"     -> featureEngine.applyOperation(operationName, src, params);
-                case "overlay"       -> overlayEngine.applyOperation(operationName, src, params);
-                case "stain"         -> stainEngine.applyOperation(operationName, src, params);
+                case "overlay"         -> overlayEngine.applyOperation(operationName, src, params);
+                case "stain"           -> stainEngine.applyOperation(operationName, src, params);
+                case "realisticborder"     -> realisticBorderEngine.applyOperation(operationName, src, params);
+                case "probabilisticborder" -> probabilisticBorderEngine.applyOperation(operationName, src, params);
                 default -> {
                     log.error("Unknown category: {}", category);
                     yield src;

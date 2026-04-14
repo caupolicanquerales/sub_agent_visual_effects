@@ -285,7 +285,7 @@ public class ImageSmoothingEngine {
             int rows = src.rows();
             int cols = src.cols();
             int ch   = src.channels(); // 3 for BGR
-            Random rng = new Random(seed);
+            Random rng = (seed < 0) ? new Random() : new Random(seed);
 
             // Build one torn-edge profile per side; seed is advanced implicitly by rng state
             int[] topProfile   = buildTornProfile(cols, maxDepth, roughness, rng);
@@ -362,7 +362,7 @@ public class ImageSmoothingEngine {
             int rows = src.rows();
             int cols = src.cols();
             int ch   = src.channels();
-            Random rng = new Random(seed);
+            Random rng = (seed < 0) ? new Random() : new Random(seed);
 
             // Build organic boundary profiles for each edge
             int[] topProfile   = buildTornProfile(cols, depth, roughness, rng);
@@ -414,12 +414,229 @@ public class ImageSmoothingEngine {
                 if (rowChanged) dst.put(r, 0, rowBuf);
             }
             return dst;
+        }),
+
+        // 15. Aging blotches — domain-warped fBm organic discoloration over the paper body.
+        //
+        //     Three missing mathematical tools from the full aging-realism set are all
+        //     implemented here in a single operation:
+        //
+        //     ① Fractional Brownian Motion (Organic Blotches)
+        //           fBm(x,y) = Σᵢ₌₀ⁿ⁻¹  persistence^i · Perlin2D(x·lac^i, y·lac^i)
+        //         Multi-octave noise: each octave halves amplitude and doubles frequency.
+        //         The accumulated sum produces organic, multi-scale blotch boundary
+        //         geometry that matches real paper oxidation (foxing spots, humidity rings).
+        //
+        //     ② Perlin Gradient Noise (Soft Discoloration)
+        //         Used as the base function in every fBm octave.  Ken Perlin's improved
+        //         2002 gradient noise: smooth, band-limited, no grid artefacts.  Unlike
+        //         the bilinear noise grid in 'vignette', this produces provably smooth
+        //         C¹ transitions with genuine gradient coherence.
+        //
+        //     ③ Domain-Warped Gradient Fields (Stain Irregularity)
+        //         The sampling point (x,y) is displaced BEFORE the main fBm query by a
+        //         secondary independent fBm warp pass:
+        //           wx = fBm(x + 1.7, y + 9.2)    // x-displacement field
+        //           wy = fBm(x + 8.3, y + 2.8)    // y-displacement field
+        //           result = fBm(x + W·wx, y + W·wy)
+        //         This breaks the inherent axis-aligned symmetry of fBm into fjord-like
+        //         "folded fjord" coastlines — the same technique used in the stain engine.
+        //         Visual result: blotch boundaries curl, fold, and interlock exactly like
+        //         dried liquid stains on paper rather than smooth Gaussian hills.
+        //
+        //     ④ Multiplicative Blending (Texture Interaction)
+        //           dst_C = src_C · factorC    where factorC = 1 − weight·(1 − tintC/255)
+        //         Multiplicative blend naturally preserves dark text (src_C = 0 → dst_C = 0)
+        //         while proportionally warming and dimming bright paper pixels at blotch zones.
+        //         Satisfying the physical constraint that ink on aged paper stays legible.
+        //
+        //     Pipeline position: apply AFTER floodfill (uniform parchment base), BEFORE
+        //     pyrmeanshift.  pyrmeanshift will then cluster the fBm-blotched pixels into
+        //     natural colour pockets, and the subsequent bilateral×3 will softly halo the
+        //     blotch edges alongside the ink halos — compounding all effects naturally.
+        //
+        //     params:
+        //       octaves      (int,    5    — fBm octave count; 4–6 is realistic range)
+        //       persistence  (double, 0.50 — amplitude scaling per octave; 0.5 = classic)
+        //       lacunarity   (double, 2.0  — frequency multiplier per octave; 2.0 = classic)
+        //       scale        (double, 0.003— base spatial frequency; smaller → larger blotches)
+        //       warpStrength (double, 0.80 — domain-warp displacement amplitude; 0=no warp)
+        //       intensity    (double, 0.28 — max tint weight at blotch centre [0,1])
+        //       warmR        (int,    162  — blotch tint red component in RGB)
+        //       warmG        (int,    118  — blotch tint green component in RGB)
+        //       warmB        (int,     68  — blotch tint blue component in RGB)
+        //       seed         (int,    -1   — -1=random each call, ≥0=reproducible)
+        Map.entry("agingblotches", (src, params) -> {
+            int    octaves      = ((Number) params.getOrDefault("octaves",      5   )).intValue();
+            double persistence  = ((Number) params.getOrDefault("persistence",  0.50)).doubleValue();
+            double lacunarity   = ((Number) params.getOrDefault("lacunarity",   2.0 )).doubleValue();
+            double scale        = ((Number) params.getOrDefault("scale",        0.003)).doubleValue();
+            double warpStrength = ((Number) params.getOrDefault("warpStrength", 0.80)).doubleValue();
+            double intensity    = ((Number) params.getOrDefault("intensity",    0.28)).doubleValue();
+            int    warmR        = ((Number) params.getOrDefault("warmR",       162  )).intValue();
+            int    warmG        = ((Number) params.getOrDefault("warmG",       118  )).intValue();
+            int    warmB        = ((Number) params.getOrDefault("warmB",        68  )).intValue();
+            int    seed         = ((Number) params.getOrDefault("seed",         -1  )).intValue();
+
+            int    rows = src.rows();
+            int    cols = src.cols();
+            int    ch   = src.channels();
+            Random rng  = (seed < 0) ? new Random() : new Random(seed);
+
+            // Two independent Perlin permutation tables ensure the warp fBm
+            // (perm2) is statistically decorrelated from the blotch fBm (perm1).
+            int[] perm1 = buildPermTable(rng);   // drives main blotch fBm
+            int[] perm2 = buildPermTable(rng);   // drives domain-warp fBm
+
+            // Pre-compute tint factors (normalised to [0,1])
+            double tR = warmR / 255.0;
+            double tG = warmG / 255.0;
+            double tB = warmB / 255.0;
+
+            Mat    dst    = src.clone();
+            byte[] rowBuf = new byte[cols * ch];
+
+            for (int r = 0; r < rows; r++) {
+                src.get(r, 0, rowBuf);
+                boolean changed = false;
+
+                for (int c = 0; c < cols; c++) {
+                    double nx = c * scale;
+                    double ny = r * scale;
+
+                    // ── Domain-warp pass ──────────────────────────────────────
+                    // Two independent fBm calls at phase-shifted coordinates give
+                    // two scalar displacement fields wx and wy.  These warp the
+                    // sampling position before the main blotch query.
+                    double wx  = fbm(nx + 1.7, ny + 9.2, octaves, persistence, lacunarity, perm2);
+                    double wy  = fbm(nx + 8.3, ny + 2.8, octaves, persistence, lacunarity, perm2);
+
+                    // ── Main blotch fBm at warped position ───────────────────
+                    double raw = fbm(nx + warpStrength * wx,
+                                     ny + warpStrength * wy,
+                                     octaves, persistence, lacunarity, perm1);
+
+                    // Only the positive lobe of fBm creates blotches.
+                    // Negative values leave the pixel untouched (clean parchment zones).
+                    if (raw <= 0.0) continue;
+
+                    // Map fBm value → blending weight ∈ [0, intensity]
+                    // Factor 2.5 compensates for the half-space truncation so
+                    // the full [0,1] weight range is still reachable.
+                    double weight = Math.min(1.0, raw * intensity * 2.5);
+
+                    // ── Multiplicative warm blend ─────────────────────────────
+                    // Per-channel factor:  factorC = 1 − weight·(1 − tintC)
+                    //   weight=0 → factor=1.0 → pixel unchanged
+                    //   weight=1 → factor=tintC → pixel = src · tintC  (darkened + warm)
+                    // Black text (src=0) → 0 × anything = 0  → completely unaffected.
+                    double fR = 1.0 - weight * (1.0 - tR);
+                    double fG = 1.0 - weight * (1.0 - tG);
+                    double fB = 1.0 - weight * (1.0 - tB);
+
+                    int    base = c * ch;
+                    double b    = rowBuf[base    ] & 0xFF;
+                    double g    = rowBuf[base + 1] & 0xFF;
+                    double rv   = rowBuf[base + 2] & 0xFF;
+
+                    rowBuf[base    ] = clampByte((int) Math.round(b  * fB));
+                    rowBuf[base + 1] = clampByte((int) Math.round(g  * fG));
+                    rowBuf[base + 2] = clampByte((int) Math.round(rv * fR));
+                    changed = true;
+                }
+                if (changed) dst.put(r, 0, rowBuf);
+            }
+            return dst;
         })
     );
 
     public Mat applyFilter(String filterName, Mat input, Map<String, Object> params) {
         return filterRegistry.getOrDefault(filterName.toLowerCase(), (src, p) -> src)
                              .apply(input, params);
+    }
+
+    // -----------------------------------------------------------------------
+    // Perlin gradient noise + fBm helpers (used by agingblotches)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Fractional Brownian Motion — sum of {@code octaves} Perlin noise layers.
+     * Each octave multiplies frequency by {@code lacunarity} and amplitude by
+     * {@code persistence}.  Result is normalised by the sum of all amplitudes so
+     * the output remains in approximately [−1, 1] regardless of octave count.
+     *
+     *   fBm(x,y) = (Σᵢ persistence^i · Perlin2D(x·lac^i, y·lac^i)) / (Σᵢ persistence^i)
+     */
+    private static double fbm(double x, double y,
+                               int octaves, double persistence, double lacunarity,
+                               int[] perm) {
+        double value     = 0.0;
+        double amplitude = 1.0;
+        double frequency = 1.0;
+        double maxVal    = 0.0;
+        for (int i = 0; i < octaves; i++) {
+            value     += amplitude * perlin2D(x * frequency, y * frequency, perm);
+            maxVal    += amplitude;
+            amplitude *= persistence;
+            frequency *= lacunarity;
+        }
+        return (maxVal > 0.0) ? value / maxVal : 0.0;
+    }
+
+    /**
+     * Ken Perlin's Improved 2-D Noise (2002 reference implementation).
+     * Returns a value in approximately [−1, 1].
+     * Gradient table uses 4 diagonal unit vectors (hash & 3) — each cell has a
+     * unique gradient that produces smooth, band-limited variation without any
+     * visible grid-aligned artefacts.
+     */
+    private static double perlin2D(double x, double y, int[] p) {
+        int    xi = ((int) Math.floor(x)) & 255;
+        int    yi = ((int) Math.floor(y)) & 255;
+        double xf = x - Math.floor(x);
+        double yf = y - Math.floor(y);
+        double u  = perlinFade(xf);
+        double v  = perlinFade(yf);
+        int    aa = p[p[xi    ] + yi    ];
+        int    ab = p[p[xi    ] + yi + 1];
+        int    ba = p[p[xi + 1] + yi    ];
+        int    bb = p[p[xi + 1] + yi + 1];
+        return perlinLerp(v,
+                perlinLerp(u, perlinGrad2(aa, xf,     yf    ), perlinGrad2(ba, xf - 1, yf    )),
+                perlinLerp(u, perlinGrad2(ab, xf,     yf - 1), perlinGrad2(bb, xf - 1, yf - 1)));
+    }
+
+    /** Perlin smooth-step fade curve: f(t) = 6t⁵ − 15t⁴ + 10t³ (zero first and second derivative at 0/1) */
+    private static double perlinFade(double t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+    private static double perlinLerp(double t, double a, double b) { return a + t * (b - a); }
+    private static double perlinGrad2(int hash, double x, double y) {
+        switch (hash & 3) {
+            case 0:  return  x + y;
+            case 1:  return -x + y;
+            case 2:  return  x - y;
+            default: return -x - y;
+        }
+    }
+
+    /**
+     * Fisher-Yates shuffle of [0..255] doubled to [0..511] for wrap-free lookup.
+     * Accepts any Random instance so both perm1 and perm2 draw from the same
+     * seeded RNG in sequence — guaranteeing independence only by the state advance.
+     */
+    private static int[] buildPermTable(Random rng) {
+        int[] p = new int[256];
+        for (int i = 0; i < 256; i++) p[i] = i;
+        for (int i = 255; i > 0; i--) {
+            int j = rng.nextInt(i + 1);
+            int t = p[i]; p[i] = p[j]; p[j] = t;
+        }
+        int[] perm = new int[512];
+        for (int i = 0; i < 512; i++) perm[i] = p[i & 255];
+        return perm;
+    }
+
+    private static byte clampByte(int v) {
+        return (byte) Math.max(0, Math.min(255, v));
     }
 
     // -----------------------------------------------------------------------
