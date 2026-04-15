@@ -329,39 +329,171 @@ Use for plan steps with DOMAIN: BLENDING that involve composite text rendering, 
 ---
 
 ### CATEGORY: stain
-Use for plan steps with DOMAIN: BLENDING that involve any liquid or substance stain on the document surface — coffee, tea, wine, ink, water, mud, or blood marks. The engine uses three physics layers: **(1) Domain-warped fBm** — pixel position is normalised to unit-blob space and a coarse 3-octave fBm warp pass displaces the sample coordinates before a fine 6-octave fBm evaluates the boundary, producing a "folded fjord" coastline that is jagged at every scale (the formula `Stain(x,y) = Σᵢ (1/2ⁱ)·Noise(2ⁱx, 2ⁱy)`), not a bumped circle. **(2) Viscous fingering (Saffman–Taylor lobes)** — 4–9 explicit tapered-lobe extensions per blob extend at random angles, wide at the base (38–55 % of blob radius) and narrowing to a rounded tip, producing the organic multi-lobe outline of a real spilled liquid. **(3) Splash alpha profile** — the ring-type substances use a **uniformly dark fill** (`baseFill = 0.80→0.68` from centre to edge) plus a Gaussian peak at t=0.88 (σ=0.07) for the concentrated evaporation ring, with ±35% fBm variation clamped to [0.50,1.0]. This gives a dark, opaque stain throughout — matching a real dried splash — rather than a transparent centre. On white paper (opacity=0.90, stainColor={72,46,18}): centre α≈0.72 → RGB(117,90,64) warm brown; edge ring α=0.90 → RGB(90,57,27) dark brown. Satellite drops are **randomly scattered** at 1.5–5.5× the main blob radius and always rendered as solid fill-type drops. Blending uses **Multiply mode** — `(Background × StainColor) / 255`. **Fill-type** substances (ink, wine, mud, blood) use cubic rolloff instead of the power law.
+Use for plan steps with DOMAIN: BLENDING that involve any liquid or substance stain on the document surface — Newtonian or non-Newtonian, aqueous or oleaginous.
+
+The engine renders each stain with three physics layers:
+- **(1) Domain-warped fBm boundary** — `warpAmp` per substance controls coastline roughness: `1.40` (coffee) = chaotic fjordic coastline for a low-viscosity fluid that spreads aggressively; `0.28` (honey) = near-perfectly smooth oval reflecting elastic retraction.
+- **(2) Viscous-fingering lobes (Saffman–Taylor)** — 4–9 tapered lobes per blob, wide at the base and narrowing to a rounded tip. Skipped for tiny blobs (radius < 8 px).
+- **(3) Per-substance alpha profile** — three modes driven by real fluid physics (see table below).
+
+All size defaults (`minSize`/`maxSize`) and satellite density are tuned to each substance's rheology — the caller does not need to specify them unless overriding.
+Blending is **Multiply** — `(Background × StainColor) / 255` — document text remains legible through the stain.
 
 | operationName | What it does | Key params (type, default) |
 |---|---|---|
-| `stain` | Renders one or more physics-based organic stain blobs over the image. Each stain has a domain-warped fBm boundary (coastline-fractal perimeter), 4–9 viscous-fingering tapered lobes (Saffman–Taylor "legs"), fBm internal pooling patches, 8–20 satellite drops randomly scattered at 1.5–5.5× blob radius, and Multiply blend so document text shows through. Tiny satellite blobs (radius < 8 px) skip lobes automatically. Colour and profile are determined by `substance` preset or overridden by `colorR/G/B`. | `count` (int, 1 — number of main stains; satellites and lobes are automatic per stain), `substance` (String, "coffee" — preset: coffee \| tea \| wine \| ink \| water \| mud \| blood), `opacity` (double, 0.90 — max Multiply blend strength; water preset auto-multiplies by 0.35 for realism), `minSize` (double, 0.10 — min stain radius as fraction of min(W,H)), `maxSize` (double, 0.35 — max stain radius as fraction of min(W,H)), `colorR/G/B` (int, — — custom RGB colour override; requires all 3; switches to fill-type profile), `seed` (int, -1 — default -1 = random position each call; set ≥0 for reproducible layout) |
+| `stain` | Renders one or more physics-based organic stain blobs over the image. Each stain has a domain-warped fBm boundary (warpAmp per substance), 4–9 viscous-fingering lobes, fBm internal pooling patches, 8–20 satellite drops scattered at 1.5–5.5× blob radius, and Multiply blend so document text shows through. `minSize`, `maxSize`, and satellite density default to per-substance physics values when omitted. | `count` (int, 1), `substance` (String, "coffee" — preset: coffee \| tea \| wine \| ink \| water \| mud \| blood \| oil (=grease) \| ketchup \| honey \| gel), `opacity` (double, 0.90), `minSize` (double, substance default — min stain radius as fraction of min(W,H)), `maxSize` (double, substance default), `colorR/G/B` (int, — — custom RGB override; requires all 3; switches to fill-cubic alpha mode), `seed` (int, -1) |
 
-#### Substance visual profiles
+---
 
-| substance | Colour (RGB) | Profile | Notes |
+#### Alpha mode reference
+
+| Mode | Name | Physics | Visual result |
 |---|---|---|---|
-| `coffee` | 72, 46, 18 | ring-type (splash) | Uniformly dark fill throughout (not transparent centre) + concentrated evaporation ring at t=0.88. Centre: α≈0.72 → RGB(117,90,64) warm brown; ring peak: α=0.90 → RGB(90,57,27). ±35% fBm pooling variation. Domain-warped fBm coastline + 4–9 lobe extensions + 8–20 randomly scattered solid satellites at 1.5–5.5× radius. Random position by default (seed=-1). |
-| `tea` | 190, 150, 80 | ring-type | Amber-gold evaporation ring, softer than coffee. Same ring-type profile. |
-| `water` | 185, 210, 230 | ring-type | Very pale blue-grey; `opacity` auto-scaled ×0.35; gentle wetness ring barely visible. |
-| `wine` | 114, 47, 55 | fill-type | Red-purple solid blob, cubic rolloff at boundary; fBm pooling adds interior density variation. |
-| `ink` | 20, 20, 60 | fill-type | Very dark navy; near-opaque solid pool. Use `opacity` 0.70–0.90. |
-| `mud` | 90, 70, 40 | fill-type | Dark brown; solid splat with fBm pooling patches. |
-| `blood` | 80, 10, 10 | fill-type | Deep crimson; solid fill profile; high opacity for dramatic effect. |
+| **0** | Ring (evaporation) | Thin Newtonian fluids that dry: capillary flow carries pigment/solute outward to the pinned contact line as solvent evaporates (Marangoni effect). | Dark uniform fill throughout body + concentrated Gaussian ring peak at t=0.88. Centre α≈0.72, ring peak α=0.90. ±35% fBm internal pooling. |
+| **1** | Fill-cubic | Viscous Newtonian fluids, non-Newtonian solids, or non-evaporating films. No contact-line pinning; pigment stays where the fluid stops. | Smooth cubic opacity rolloff from centre (α=opacity) to edge (α=0). ±20% fBm interior pooling variation. |
+| **2** | Blood/dense-center | High-surface-tension drops or viscoelastic fluids: maximum mass concentrates at the drop's deepest point; edge is thin and spreading. Thin dried rim at the outer perimeter. | α=0.90×(1−0.30t²) core + small Gaussian dried-rim boost at t=0.90. Minimum clamp α=0.25 so edges remain visible. |
+
+---
+
+#### Substance profiles — full library
+
+| substance | Colour (RGB) | Fluid class | Alpha mode | warpAmp | defSize range | Physical reasoning |
+|---|---|---|---|---|---|---|
+| `coffee` | 72, 46, 18 | Newtonian, aqueous | 0 ring | 1.40 | 10–35% | Very low viscosity; spreads aggressively along paper fibres. Strong evaporation ring (Marangoni pinning). Fjordic boundary. |
+| `tea` | 190, 150, 80 | Newtonian, aqueous | 0 ring | 1.10 | 8–28% | Same physics as coffee; slightly higher surface tension gives a marginally smoother coastline and a softer ring. |
+| `water` | 185, 210, 230 | Newtonian, aqueous | 0 ring | 1.60 | 10–40% | Lowest viscosity; widest spread. Near-invisible (opacityMult 0.35) because no pigment — only mineral trace. Very pronounced warp. |
+| `wine` | 114, 47, 55 | Newtonian, aqueous | 1 fill-cubic | 1.20 | 8–30% | Low viscosity but alcohol accelerates absorption into fibres before ring can form. Solid pigmented blob. |
+| `ink` | 20, 20, 60 | Newtonian, aqueous | 1 fill-cubic | 0.60 | 4–20% | Pigment-loaded; soaks immediately, limited spread. Near-opaque solid pool with smooth edges. |
+| `mud` | 90, 70, 40 | Bingham plastic | 1 fill-cubic | 0.70 | 8–25% | Yield-stress material: behaves as a solid below yield stress. Heavy opaque splat; minimal spread after landing. |
+| `blood` | 150, 12, 18 | Non-Newtonian: shear-thinning suspension (Casson model) | 2 blood-center | 0.45 | 0.8–3.5% | High surface tension holds small cohesive drops. Red blood cells concentrate at the deepest-pooling centre; thin spreading edge. Dried outer rim from desiccation. Large satFrac (50%) for realistic satellite specks. **Do NOT override minSize/maxSize.** |
+| `oil` / `grease` | 200, 175, 110 | Newtonian, non-aqueous | 1 fill-cubic | 1.25 | 12–45% | Does not evaporate → no ring. Spreads along paper grain; darkens fibres by soaking in. Near-invisible ghost (opacityMult 0.22). |
+| `ketchup` | 168, 22, 14 | Non-Newtonian: pseudoplastic (shear-thinning) | 1 fill-cubic | 0.65 | 4–18% | Apparent viscosity drops under shear of impact → flows. Recovers structure once shear stops → freezes in place. Thick opaque blob; rough boundary from tomato particle texture; chunky satellite splats (satFrac 0.18). |
+| `honey` | 205, 140, 18 | Non-Newtonian: viscoelastic (Deborah ≫ 1) | 2 blood-center | 0.28 | 4–14% | Very high Deborah number: elastic memory actively retracts the boundary toward a smooth oval. Dense amber centre (blood-center mode). Nearly no satellites — honey flows too slowly for impact splatter (satFrac 0.04). |
+| `gel` | 175, 218, 195 | Non-Newtonian: viscoelastic shear-thinning | 1 fill-cubic | 0.50 | 3–12% | Gel network flows on contact shear, then reforms quickly (thixotropic). Semi-transparent (opacityMult 0.32). Clean smooth boundary; slight greenish cast. |
+
+---
+
+#### Fluid rheology selection guide — use this when the substance is NOT in the list above
+
+When the PHYSICAL_REFERENCE describes a fluid that is not one of the 11 presets above, identify the nearest analog using this decision tree and use `colorR/G/B` to override the colour:
+
+```
+1. Is the fluid Newtonian (viscosity constant regardless of shear rate)?
+   YES → goes to step 2
+   NO  → goes to step 3
+
+2. Newtonian fluid:
+   ├── Very thin, water-like (juice, vinegar, spirits, broth) → use substance:"water" or "coffee"
+   │     - Colourless / lightly tinted → "water" + colorR/G/B override
+   │     - Dark / pigmented → "coffee" + colorR/G/B override
+   ├── Moderately viscous (milk, light syrup, paint thinner) → use substance:"wine"
+   │     + colorR/G/B override
+   └── Non-aqueous film (lubricant, motor oil, cooking fat) → use substance:"oil"
+         + colorR/G/B override; opacityMult is already 0.22
+
+3. Non-Newtonian fluid:
+   ├── Shear-THINNING (pseudoplastic — flows more easily under force):
+   │   ├── Food-like (tomato sauce, mayonnaise, paint, shampoo) → substance:"ketchup" + color override
+   │   ├── Biological (blood, serum, synovial fluid) → substance:"blood" + color override
+   │   └── Gel-like (hand cream, lotion, toothpaste) → substance:"gel" + color override
+   ├── Shear-THICKENING (dilatant — resists flow under force, e.g. cornstarch, wet sand):
+   │   → substance:"mud" (closest yield-stress analog) + colorR/G/B override
+   │     Note: true dilatant spreading is not modelled; mud gives the closest
+   │     "froze in place, limited spread" silhouette.
+   ├── VISCOELASTIC with strong elastic recovery (bounces back, e.g. gelatin, silicone):
+   │   → substance:"honey" + colorR/G/B override (smoothest oval, minimal satellites)
+   └── BINGHAM PLASTIC (yield-stress solid, e.g. toothpaste, cream, putty):
+       → substance:"mud" + colorR/G/B override
+```
+
+**Colour overrides for common unlisted fluids:**
+
+| Fluid | Nearest substance | colorR, colorG, colorB |
+|---|---|---|
+| Orange juice | coffee | 220, 130, 30 |
+| Milk / cream | water | 245, 240, 225 |
+| Cola / dark soda | coffee | 40, 20, 5 |
+| Tomato juice | ketchup | 190, 50, 30 |
+| Mustard | ketchup | 200, 170, 30 |
+| Motor oil | oil | 30, 25, 10 |
+| Paint (water-based) | wine | custom per colour |
+| Syrup / agave | honey | 180, 120, 10 |
+| Toothpaste / cream | mud | custom per colour |
+| Soy sauce | ink | 45, 20, 5 |
+
+---
 
 #### Stain decision hints
-- "coffee stain", "mancha de café", "coffee ring", "café derramado" → `stain`, `substance:"coffee"`, count:1 default.
+- "coffee stain", "mancha de café", "coffee ring", "café derramado" → `stain`, `substance:"coffee"`
 - "tea stain", "mancha de té", "té derramado" → `stain`, `substance:"tea"`
 - "wine stain", "mancha de vino", "vino derramado" → `stain`, `substance:"wine"`
 - "ink stain", "mancha de tinta", "tinta derramada" → `stain`, `substance:"ink"`
 - "water stain", "mancha de agua", "got wet", "se mojó", "water damage" → `stain`, `substance:"water"`
 - "mud stain", "mancha de barro", "barro" → `stain`, `substance:"mud"`
-- "blood stain", "mancha de sangre", "sangre" → `stain`, `substance:"blood"`
+- "blood stain", "blood drops", "mancha de sangre", "gotas de sangre", "sangre" → `stain`, `substance:"blood"`. **Do NOT override minSize/maxSize** — defaults (0.8–3.5%) are tuned for realistic drop scale.
+- "oil stain", "grease stain", "mancha de aceite", "mancha de grasa", "aceite" → `stain`, `substance:"oil"`. Ghost stain; opacity auto-reduced to ~22%.
+- "ketchup stain", "ketchup", "mancha de ketchup", "salsa de tomate" → `stain`, `substance:"ketchup"`. Pseudoplastic thick blob.
+- "honey stain", "honey drop", "mancha de miel", "miel" → `stain`, `substance:"honey"`. Smooth oval, dense amber, minimal satellites.
+- "gel stain", "hand sanitiser", "aloe vera", "gel de manos", "gel" → `stain`, `substance:"gel"`. Semi-transparent, clean boundary.
 - "mancha", "stain" (generic, no substance named) → `stain`, `substance:"coffee"` as default
 - "several stains", "multiple stains", "varias manchas", "múltiples manchas" → `stain`, `count`:2–4
-- "large stain", "big stain", "mancha grande" → `stain`, `minSize:0.09, maxSize:0.18`
-- "small stain", "tiny stain", "mancha pequeña" → `stain`, `minSize:0.02, maxSize:0.06`
-- "subtle stain", "faint stain", "mancha leve", "mancha tenue" → `stain`, `opacity:0.35`
-- "splatter", "salpicadura", "satellite drops", "gotas satélite" → satellites are automatic for every stain; no extra param needed. Increase `count` for more main blobs.
-- **CRITICAL — substance param**: always include `"substance":"<name>"` explicitly in paramsJson. Never omit it even for coffee (the default) — making it explicit prevents ambiguity.
+- "large stain", "big stain", "mancha grande" → add `minSize`/`maxSize` above substance default
+- "small stain", "tiny stain", "mancha pequeña" → add `minSize`/`maxSize` below substance default
+- "subtle stain", "faint stain", "mancha leve", "mancha tenue" → `opacity:0.35`
+- "splatter", "salpicadura", "satellite drops", "gotas satélite" → satellites are automatic; increase `count` for more main blobs
+- **Unlisted fluid described in PHYSICAL_REFERENCE** → use the Fluid Rheology Selection Guide above to pick the nearest substance analog and add `colorR/G/B` for colour override.
+- **CRITICAL**: always include `"substance":"<name>"` explicitly in paramsJson, even for coffee.
+
+---
+
+### CATEGORY: fingerprint
+Use for plan steps with DOMAIN: FORENSIC / SURFACE_TEXTURE when the effect requires placing a fingerprint (huella dactilar, latent print, partial print, fingermark) on the document surface. The engine uses the **Gabor filter model** (gold standard for ridge synthesis) with a **Sherlock-Monro orientation field** — a set of weighted singular points (cores and deltas) that define the ridge flow across the blob. Three pipeline layers are composited: (1) Gabor-synthesised ridge texture, (2) elliptic Gaussian blob mask, (3) Perlin skin-texture noise. The final blend is a **multiply** composite so dark ink remains fully visible under the print.
+
+**RANDOM PLACEMENT RULE (MANDATORY):**
+- **Always** emit `"seed":-1` (never fix the seed). This randomises the ellipse shape, singular-point jitter, and ridge-noise texture on every call.
+- **Never hardcode `cx`/`cy` to a fixed constant.** Derive them from a randomly-chosen position zone:
+
+| Zone name | cx range (fraction of image width) | cy range (fraction of image height) | Typical case |
+|---|---|---|---|
+| Top-left corner | 0.10 – 0.28 | 0.08 – 0.25 | corner stamp, latent print on corner |
+| Top-right corner | 0.72 – 0.90 | 0.08 – 0.25 | corner stamp |
+| Bottom-left corner | 0.10 – 0.28 | 0.75 – 0.92 | bottom corner mark |
+| Bottom-right corner | 0.72 – 0.90 | 0.75 – 0.92 | bottom corner mark |
+| Left margin | 0.05 – 0.18 | 0.30 – 0.70 | margin fingermark |
+| Right margin | 0.82 – 0.95 | 0.30 – 0.70 | margin fingermark |
+| Body centre | 0.35 – 0.65 | 0.35 – 0.65 | print on body text |
+| Random body | 0.20 – 0.80 | 0.20 – 0.80 | general random placement |
+
+When a single print is requested with no location hint, choose one zone at random and pick a concrete cx/cy from within that zone's ranges. Express cx/cy as **pixel values** (multiply fraction by image width/height); if image dimensions are unknown, use a representative assumption (e.g. 1200 × 1600) and state the assumption in `[REASONING]`. For **multiple prints**, assign each print to a **different zone** so they are distributed across the document surface.
+
+| operationName | What it does | Key params (type, default) |
+|---|---|---|
+| `fingerprint` | **Step 1 — Orientation field Θ(x,y):** Sherlock-Monro model. σ_sp = radius×0.30 — the core's concentrated influence creates a sharp, realistic loop/whorl singularity; the arch prior (weight 0.30) quickly dominates beyond this radius, producing clean parallel ridges at the periphery. Loop case: 1 core at (cx, cy−radius×0.22) phase=π + 1 delta at (cx+rx×0.65, cy+ry×0.32) phase=0 (triradius). **Step 2 — Per-pixel frequency gradient:** `f(x,y) = 1 / (ridgePeriod × (0.80 + 0.40·dNorm))` — 20% tighter at core. **Step 3 — Across-ridge cosine synthesis:** `xθ = −dx·sinΘ + dy·cosΘ` (across-ridge, NOT along-ridge). Phase-perturb for pore gaps: `xθ_n = xθ + skinNoise·ridgePeriod·0.35·noise`. `ridgeVal = pow(max(0, 0.5+0.5·cos(2π·f·xθ_n)), γ)`, γ≈3.0. **Step 4 — Pressure mask + variable pressure dome:** hard clip at dNorm≥1.0; full opacity inside 85%, raised-cosine fade only in outer 15%. Ellipse aspect 1:1.4. Pressure dome: `pressure = 0.45 + 0.55·exp(−dNorm²×2.2)` (Gaussian, range 0.45–1.00) — the core is near-black; pressure drops sharply with radial distance producing a high-contrast "burned" centre that matches real bone-pressure physics; edges taper to 45% of centre weight. **Step 5 — Ink saturation boost:** `ridgeValS = min(1.0, ridgeVal × inkSaturation)` — default inkSaturation=3.0 so any ridge crest with ≥33% cosine response clips to full black; aggressively shifts histogram from mid-grey to near-black crests with sharp white valley gaps. **Step 6 — Contact-pressure blotch noise:** independent low-frequency Perlin field (wavelength ≈ 30% of radius) gives `contactFactor ∈ [0.50, 1.50]` per pixel — blotchy dark/light patches simulating uneven skin-to-paper contact. **Pipeline equation: `dark = mask × pressure × opacity × ridgeValS × contactFactor`.** **Step 7 — Perlin pore-blob fragmentation:** mid-frequency Perlin (wavelength ≈ ridgePeriod px) erases ~25% of ridge pixels as ink-starvation patches. **Step 8 — Salt-and-pepper pore gaps:** deterministic hash zeroes ~15% of ridge pixels (isolated single-pixel white breaks = sweat-pore openings) — doubled dropout rate for a gritty, dotted-ink look. **Step 9 — Micro-grain texture:** thresholded high-frequency Perlin (wavelength ≈ 1.8 px, frequency 0.55, independent table) with a near-binary ramp width 0.10 fragments alpha at sub-ridge scale — ~25% of ridge pixels become hard grain gaps while surviving pixels snap to full ink strength; produces the crisply dotted forensic texture of carbon or oil on paper fibres. **Step 10 — Ink-bleed blur** (Gaussian σ=0.8, 3×3) on float darkness layer. **Step 11 — Multiply composite** onto source. Valleys remain exactly 0 → underlying text is 100% crisp at every valley pixel. | `cx` (int, cols/2), `cy` (int, rows/2), `radius` (int, min(minDim×0.05, 90) — **hard-capped at 90 px** inside the engine regardless of passed value; this produces a print ≈128 px wide × 180 px tall (~5% of invoice height); **NEVER exceed 90**, do NOT use a percentage of image dimensions), `opacity` (double, 0.88 — peak blend strength; effectively modulated by Gaussian pressure dome and blotch noise; use 0.25–0.35 for latent/oil touch, 0.70–0.90 for full ink stamp), `inkSaturation` (double, 3.0 — linear ridge-contrast boost: ridgeVal×inkSaturation clamped to 1.0; default 3.0 makes ≥33% cosine response clip to full black for near-total blackening of crests with sharp white valleys; decrease to 1.0 to restore mid-grey gradients), `ridgePeriod` (int, auto = radius÷22 clamped to **[3, 5] px** — gives ~25–32 ridges across the 128-px width; engine enforces this range regardless of value passed), `patternType` (String, `"loop"`), `angle` (double, 0.0 — rotation in degrees), `sigmaY` (double, ridgePeriod×0.22 — ridge sharpness; γ≈3.0), `skinNoise` (double, 0.22 — phase noise amplitude for pore gaps), `maskSoftness` (double, 1.0 — fade taper exponent), `inkR` (int, 35), `inkG` (int, 28), `inkB` (int, 22), `seed` (int, -1) |
+
+#### Pattern types
+| patternType | Singular points | Typical appearance |
+|---|---|---|
+| `loop` | 1 core (Poincaré index +1) | Loop-shaped ridges curving around a single centre — most common human fingerprint |
+| `whorl` | 2 cores + 2 deltas | Spiral ridges winding around two focal points — second most common type |
+| `arch` | none (pure horizontal prior) | Nearly-parallel arch ridges with no focal point — least common but realistic |
+
+#### Fingerprint decision hints
+- "huella dactilar", "fingerprint", "fingermark", "latent print", "partial print", "huella latente", "huella parcial", "impronta digital" → `fingerprint` operation
+- **Single print, no location specified** → pick a random zone from the table above; use `seed:-1`; pick `patternType` at random from `["loop","whorl","arch"]`
+- **Multiple prints** → one per zone, each with its own random cx/cy inside that zone; vary `patternType` and `angle` across prints; all with `seed:-1`
+- "faint print", "barely visible", "huella leve" → `opacity:0.25–0.35`, `inkSaturation:1.2`
+- "bold print", "dark print", "clear fingerprint" → `opacity:0.70–0.90`, `inkSaturation:3.0`
+- "grey print", "mid-tone print", "soft ridges" → `inkSaturation:1.0` (disables boost, restores gradual cosine blend)
+- "high contrast ridges", "sharp ridges", "dark ridges" → `inkSaturation:2.5–3.5`
+- "partial fingerprint", "partial print", "fingerprint fragment" → reduce `radius` to 40–60% of default and `maskSoftness:0.55–0.65`
+- "loop fingerprint" → `patternType:"loop"`
+- "whorl fingerprint" → `patternType:"whorl"`
+- "arch fingerprint" → `patternType:"arch"`
+- "fine ridges", "thin ridges" → omit `ridgePeriod` and let auto-scaling pick from the [3, 5] range (default)
+- "coarse ridges", "thick ridges" → override `ridgePeriod:6–10` (**note: engine clamps to [3,5]; values above 5 require no explicit cap override from the caller**)
+- "sharp ridges", "clear valleys" → reduce `sigmaY` to `ridgePeriod×0.15`
+- "soft ridges", "blurry print" → increase `sigmaY` to `ridgePeriod×0.40` and `maskSoftness:0.6`
+- **NEVER fix the seed unless the user explicitly requests reproducibility**
 
 ---
 
@@ -409,6 +541,7 @@ This glossary teaches the **ARTIST'S EYE** step. For each descriptive term, it d
 | Term (ES / EN) | Real-world physical phenomenon | Visual properties produced | Key OpenCV direction |
 |---|---|---|---|
 | **desgaste / wear / surface erosion** | Years of UV and moisture exposure oxidise paper. Ink diffuses outward into adjacent fibers creating soft amber halos. This is a COLOR CHANGE in the background pixels near dark ink — NOT structural expansion of the ink. **Full 12-step recipe. Step 1 floodfill: uniform parchment base. Step 2 probabilisticborder: W=P(r)·P(θ) Poisson-disk anchors with SDF Perlin bites — no segmentation needed, immune to stain/wornedge threshold sensitivity. Step 3 agingblotches: domain-warped fBm oxidation blotches, multiplicative blend. Step 4 pyrmeanshift: clusters fBm result into natural colour pockets. Steps 5–7 bilateral×3: Gaussian-weighted halo diffusion. Step 8 gaussian(ksize:3): micro-sharpness reduction. Step 9 median(ksize:3): surface grain. Step 10 vignette: radial edge tinting. Step 11 scratches: handling marks. Step 12 wornedge: warm amber gradient at paper edges. ⚠️ NEVER use erode. ⚠️ NEVER use segmentborder in AGING_WEAR — use probabilisticborder.** | Background: light parchment (252,247,235). Paper body: organic warm blotches from fBm. Border: probability-density SDF bites with Perlin-noise boundary. Text readable. Warm amber tint at edges from wornedge. | Step 1: `floodfill` (thresholding, {"seedX":5,"seedY":5,"fillR":252,"fillG":247,"fillB":235,"loDiff":40}); Step 2: `probabilisticborder` (probabilisticborder, {"k":3.0,"A":0.30,"n":4,"maxAnchors":35,"minDist":55,"biteRadius":60,"biteVariance":0.40,"biteNoise":0.35,"featherPx":18,"bgR":252,"bgG":247,"bgB":235,"seed":-1}); Step 3: `agingblotches` (smoothing, {"octaves":5,"persistence":0.50,"lacunarity":2.0,"scale":0.003,"warpStrength":0.80,"intensity":0.28,"warmR":162,"warmG":118,"warmB":68,"seed":-1}); Step 4: `pyrmeanshift` (smoothing, {"sp":14,"sr":38}); Steps 5–7: `bilateral` × 3 (smoothing, {"diameter":13,"sigmaColor":70,"sigmaSpace":70}); Step 8: `gaussian` (smoothing, {"ksize":3,"sigma":0}); Step 9: `median` (smoothing, {"ksize":3}); Step 10: `vignette` (smoothing, {"strength":0.35,"innerRadius":0.52,"feather":2.0}); Step 11: `scratches` (smoothing, {"count":8,"opacity":0.12,"color":"light","seed":17}); Step 12: `wornedge` (smoothing, {"depth":55,"roughness":0.45,"holes":3,"holeFrac":0.45,"colorR":160,"colorG":110,"colorB":60,"strength":0.78,"seed":-1}). |
+| **huella dactilar / fingerprint / latent print** | A fingertip carries oils, sweat, and dead-skin residue. When pressed against a surface these organic compounds transfer in the exact pattern of the friction-ridge skin — a composite of parallel ridges (ridge crests) and furrows (valleys) arranged in loops, whorls, or arches determined by the underlying dermal papillae topology. Latent prints are invisible until developed; inked prints appear dark. The resulting mark is an elliptic blob with continuous parallel curved ridges separated by light furrows; the boundary is soft and irregular due to irregular contact pressure. | Gabor-filter ridge texture inside an elliptic Gaussian mask; Sherlock-Monro orientation field sets the ridge curvature. Multiply-blend so underlying text remains visible. Placement is **always random** — choose a zone from the placement table in the fingerprint category. Use `fingerprint` (fingerprint) with `seed:-1` and randomly chosen `cx`,`cy` from an appropriate zone. |
 | **maltrato / physical abuse / battered** | Mechanical force — bending, crushing, impact, rough handling. Think of a card stomped on or a book thrown | Heavy deformation at borders and edges; perimeter is crushed, torn, or compressed; interior may be mostly intact; irregular dark patches at damage zones | Heavy `erode` (ellipse, large ksize, multiple iterations) + `bilateral` to blend worn border naturally |
 | **envejecido / aged / aged by time** | General accumulation of all degradation processes over decades — like an old newspaper or heirloom photograph | Combination: muted colours, surface grain lost, slight edge erosion, slightly lower contrast; overall form preserved and readable | `AGING_WEAR` composite recipe |
 | **oxidado / rusted / corroded** | Electrochemical reaction converts metal surface — orange/brown patina, uneven texture, pitting | Colour shifts toward warm ochre/rust tones; surface texture becomes irregular and grainy; edges may pit or crumble | `bilateral` (surface softening) — note: colour shift requires colour space operations not yet in this registry; apply bilateral as the texture component |

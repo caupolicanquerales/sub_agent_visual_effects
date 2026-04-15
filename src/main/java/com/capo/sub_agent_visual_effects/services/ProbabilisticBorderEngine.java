@@ -33,10 +33,13 @@ public class ProbabilisticBorderEngine {
     //           k=1 → linear increase toward edges/corners
     //           k=3 → probability strongly concentrated at extremities
     //
-    //   P(θ)  = max(0, 1 + A·sin(n·θ + φ))            [Angular Handling Bias]
-    //           n=4 → four preferred wear spots (corners)
-    //           A=0.3 → 30 % bias toward preferred angles; 0 = isotropic
-    //           φ = random phase so damage never looks perfectly regular
+    //   P(θ)  = max(0, 1 + A·(0.5·sin(2θ+φ₁) + 0.3·sin(3θ+φ₂) + 0.2·sin(7θ+φ₃)))
+    //           [Multi-Harmonic Angular Bias]
+    //           Harmonics 2, 3, 7 are mutually incommensurate — their combined
+    //           pattern never repeats over [0,2π] in an obvious way.
+    //           φ₁,φ₂,φ₃ are fully independent random phases per call so every
+    //           image gets a unique angular density; no fixed corner bias.
+    //           A=0.3 → 30 % angular modulation amplitude; 0 = isotropic
     //
     //   W(x,y) = P(r) · P(θ)                          [Combined Weight ∈ [0,1]]
     //
@@ -79,8 +82,8 @@ public class ProbabilisticBorderEngine {
     // params:
     //   k           (double, 3.0)  — radial concentration exponent
     //   A           (double, 0.30) — angular bias amplitude [0=isotropic]
-    //   n           (int,    4)    — preferred wear-spot count (4 = corners)
-    //   phi         (double, -1)   — angular phase; −1 = random per call
+    //   n           (int,    4)    — (reserved; no longer drives the harmonic)
+    //   phi         (double, -1)   — phase seed for first harmonic φ₁; −1 = random per call
     //   maxAnchors  (int,    35)   — target anchor count
     //   minDist     (int,    60)   — minimum pixels between any two anchors
     //   threshold   (double, 0.55) — acceptance threshold T
@@ -117,9 +120,13 @@ public class ProbabilisticBorderEngine {
 
             Random rng = (seedVal < 0) ? new Random() : new Random(seedVal);
 
-            // Resolve phi: negative sentinel → randomise phase so the four
-            // preferred "handling" directions differ on every call
-            double phi = (phiParam < 0) ? rng.nextDouble() * 2.0 * Math.PI : phiParam;
+            // Three independent random phases for multi-harmonic angular density.
+            // φ₁ honours the user-supplied phi seed; φ₂,φ₃ are always randomised.
+            // Using incommensurate harmonics (2,3,7) with independent phases yields
+            // a unique, asymmetric angular profile each call — no fixed corner bias.
+            double phi1 = (phiParam < 0) ? rng.nextDouble() * 2.0 * Math.PI : phiParam;
+            double phi2 = rng.nextDouble() * 2.0 * Math.PI;
+            double phi3 = rng.nextDouble() * 2.0 * Math.PI;
 
             double cx   = cols / 2.0;
             double cy   = rows / 2.0;
@@ -153,11 +160,16 @@ public class ProbabilisticBorderEngine {
                 // ── Radial Power Function P(r) ────────────────────────────────
                 double Pr = Math.pow(r / rmax, k);
 
-                // ── Angular Handling Bias P(θ) ────────────────────────────────
-                // n=4 boosts the four diagonal directions (corners) relative to
-                // the cardinal directions (edge centres).
+                // ── Multi-Harmonic Angular Bias P(θ) ─────────────────────────
+                // Three incommensurate harmonics (2, 3, 7) with fully independent
+                // random phases produce a unique angular density every call.
+                // No harmonic aligns with the 4 corner diagonals systematically,
+                // so anchors scatter organically along all edges, not just corners.
                 double theta = Math.atan2(dy, dx);
-                double Pt    = Math.max(0.0, 1.0 + A * Math.sin(n * theta + phi));
+                double Pt    = Math.max(0.0, 1.0
+                    + A * ( 0.50 * Math.sin(2 * theta + phi1)
+                          + 0.30 * Math.sin(3 * theta + phi2)
+                          + 0.20 * Math.sin(7 * theta + phi3)));
 
                 // Combined weight W(px,py) ∈ [0, 1+A]
                 // We test rand < W·T so divide W by (1+A) to normalise to [0,1]

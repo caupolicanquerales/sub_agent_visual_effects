@@ -32,6 +32,7 @@ public class ActionWithOpenCVTools {
     private final StainEngine stainEngine;
     private final RealisticBorderEngine realisticBorderEngine;
     private final ProbabilisticBorderEngine probabilisticBorderEngine;
+    private final FingerprintEngine fingerprintEngine;
     private final ObjectMapper objectMapper;
 
     private static final Logger log = LoggerFactory.getLogger(ActionWithOpenCVTools.class);
@@ -47,6 +48,7 @@ public class ActionWithOpenCVTools {
             StainEngine stainEngine,
             RealisticBorderEngine realisticBorderEngine,
             ProbabilisticBorderEngine probabilisticBorderEngine,
+            FingerprintEngine fingerprintEngine,
             ObjectMapper objectMapper) {
         this.redisTemplate              = redisTemplate;
         this.smoothingEngine            = smoothingEngine;
@@ -59,6 +61,7 @@ public class ActionWithOpenCVTools {
         this.stainEngine                = stainEngine;
         this.realisticBorderEngine      = realisticBorderEngine;
         this.probabilisticBorderEngine  = probabilisticBorderEngine;
+        this.fingerprintEngine          = fingerprintEngine;
         this.objectMapper               = objectMapper;
     }
 
@@ -80,6 +83,7 @@ public class ActionWithOpenCVTools {
                     - 'stain'           : organic substance stain rendering operations
                     - 'realisticborder'     : image-segmentation based realistic border rendering
                     - 'probabilisticborder' : probability-density-driven border damage engine
+                    - 'fingerprint'         : procedural Gabor-based fingerprint overlay engine
                     """) String category,
             @ToolParam(description = """
                     The exact operation key (lower-case) to apply within the chosen category.
@@ -93,6 +97,7 @@ public class ActionWithOpenCVTools {
                     stain                : stain
                     realisticborder      : segmentborder
                     probabilisticborder  : probabilisticborder
+                    fingerprint          : fingerprint
                     """) String operationName,
             @ToolParam(description = """
                     JSON object of parameters for the chosen operation. Use {} for all defaults.
@@ -164,6 +169,7 @@ public class ActionWithOpenCVTools {
                 case "stain"           -> stainEngine.applyOperation(operationName, src, params);
                 case "realisticborder"     -> realisticBorderEngine.applyOperation(operationName, src, params);
                 case "probabilisticborder" -> probabilisticBorderEngine.applyOperation(operationName, src, params);
+                case "fingerprint"         -> fingerprintEngine.applyOperation(operationName, src, params);
                 default -> {
                     log.error("Unknown category: {}", category);
                     yield src;
