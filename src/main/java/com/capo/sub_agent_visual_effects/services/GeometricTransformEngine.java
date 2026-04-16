@@ -7,7 +7,9 @@ import org.opencv.calib3d.Calib3d;
 import org.opencv.core.Core;
 import org.opencv.core.CvType;
 import org.opencv.core.Mat;
+import org.opencv.core.MatOfPoint2f;
 import org.opencv.core.Point;
+import org.opencv.core.RotatedRect;
 import org.opencv.core.Scalar;
 import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
@@ -248,6 +250,59 @@ public class GeometricTransformEngine {
             distCoeffs.put(0, 0, k1, k2, p1, p2);
             Mat dst = new Mat();
             Calib3d.undistort(src, dst, camMatrix, distCoeffs);
+            return dst;
+        }),
+
+        // 14. Deskew – auto-detects skew angle and corrects it via affine rotation
+        //     params: borderMode (String, "replicate" – fills newly exposed edges),
+        //             maxAngle  (double, 45.0 – corrections larger than this are skipped)
+        Map.entry("deskew", (src, params) -> {
+            int    border   = borderMode((String) params.getOrDefault("borderMode", "replicate"));
+            double maxAngle = ((Number) params.getOrDefault("maxAngle", 45.0)).doubleValue();
+
+            // 1. Produce a binary mask to locate foreground pixels
+            Mat gray = new Mat();
+            if (src.channels() == 1) {
+                gray = src.clone();
+            } else {
+                Imgproc.cvtColor(src, gray, Imgproc.COLOR_BGR2GRAY);
+            }
+            Mat thresh = new Mat();
+            Imgproc.threshold(gray, thresh, 0, 255,
+                    Imgproc.THRESH_BINARY_INV | Imgproc.THRESH_OTSU);
+            gray.release();
+
+            // 2. Collect all foreground pixel coordinates
+            Mat coords = new Mat();
+            Core.findNonZero(thresh, coords);
+            thresh.release();
+
+            if (coords.empty()) {
+                coords.release();
+                return src.clone();   // blank image – nothing to correct
+            }
+
+            // 3. Fit a minimum-area rectangle to infer the dominant text angle
+            MatOfPoint2f pts = new MatOfPoint2f(coords.reshape(2, coords.rows()));
+            coords.release();
+            RotatedRect box  = Imgproc.minAreaRect(pts);
+            pts.release();
+
+            // minAreaRect returns angle in (-90, 0]; when width < height the box
+            // is portrait-oriented, so add 90° to get the true tilt.
+            double angle = box.angle;
+            if (box.size.width < box.size.height) angle += 90.0;
+
+            // Skip correction if the detected deviation exceeds the safety cap
+            if (Math.abs(angle) > maxAngle) return src.clone();
+
+            // 4. Build a pure-rotation affine matrix and warp
+            Point centre = new Point(src.cols() / 2.0, src.rows() / 2.0);
+            Mat   M      = Imgproc.getRotationMatrix2D(centre, angle, 1.0);
+            Mat   dst    = new Mat();
+            Imgproc.warpAffine(src, dst, M, src.size(),
+                    Imgproc.INTER_LINEAR, border, Scalar.all(0));
+            M.release();
             return dst;
         })
     );

@@ -33,6 +33,7 @@ public class ActionWithOpenCVTools {
     private final RealisticBorderEngine realisticBorderEngine;
     private final ProbabilisticBorderEngine probabilisticBorderEngine;
     private final FingerprintEngine fingerprintEngine;
+    private final ScanSimulationEngine scanSimulationEngine;
     private final ObjectMapper objectMapper;
 
     private static final Logger log = LoggerFactory.getLogger(ActionWithOpenCVTools.class);
@@ -49,6 +50,7 @@ public class ActionWithOpenCVTools {
             RealisticBorderEngine realisticBorderEngine,
             ProbabilisticBorderEngine probabilisticBorderEngine,
             FingerprintEngine fingerprintEngine,
+            ScanSimulationEngine scanSimulationEngine,
             ObjectMapper objectMapper) {
         this.redisTemplate              = redisTemplate;
         this.smoothingEngine            = smoothingEngine;
@@ -62,6 +64,7 @@ public class ActionWithOpenCVTools {
         this.realisticBorderEngine      = realisticBorderEngine;
         this.probabilisticBorderEngine  = probabilisticBorderEngine;
         this.fingerprintEngine          = fingerprintEngine;
+        this.scanSimulationEngine       = scanSimulationEngine;
         this.objectMapper               = objectMapper;
     }
 
@@ -84,6 +87,7 @@ public class ActionWithOpenCVTools {
                     - 'realisticborder'     : image-segmentation based realistic border rendering
                     - 'probabilisticborder' : probability-density-driven border damage engine
                     - 'fingerprint'         : procedural Gabor-based fingerprint overlay engine
+                    - 'scansimulation'       : homography-based scan tilt simulation with projective shadowing and border noise
                     """) String category,
             @ToolParam(description = """
                     The exact operation key (lower-case) to apply within the chosen category.
@@ -98,6 +102,7 @@ public class ActionWithOpenCVTools {
                     realisticborder      : segmentborder
                     probabilisticborder  : probabilisticborder
                     fingerprint          : fingerprint
+                    scansimulation       : scanrotate | scandeskew
                     """) String operationName,
             @ToolParam(description = """
                     JSON object of parameters for the chosen operation. Use {} for all defaults.
@@ -170,6 +175,7 @@ public class ActionWithOpenCVTools {
                 case "realisticborder"     -> realisticBorderEngine.applyOperation(operationName, src, params);
                 case "probabilisticborder" -> probabilisticBorderEngine.applyOperation(operationName, src, params);
                 case "fingerprint"         -> fingerprintEngine.applyOperation(operationName, src, params);
+                case "scansimulation"      -> scanSimulationEngine.applyOperation(operationName, src, params);
                 default -> {
                     log.error("Unknown category: {}", category);
                     yield src;
