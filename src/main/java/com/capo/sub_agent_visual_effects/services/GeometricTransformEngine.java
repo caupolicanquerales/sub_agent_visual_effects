@@ -128,8 +128,14 @@ public class GeometricTransformEngine {
 
         // 8. Perspective (homography) warp – caller supplies the full 3×3 matrix
         //    params: m00..m22 (identity defaults),
-        //            outWidth (src.cols), outHeight (src.rows),
+        //            outWidth (int, auto), outHeight (int, auto) – used as lower bounds;
+        //            the canvas is auto-expanded so no warped corner is clipped.
         //            interpolation (String, "linear"), borderMode (String, "constant")
+        //    Fix – Edge Padding (canvas problem):
+        //    All 4 source corners are projected through H to compute the true
+        //    bounding box of the warped document.  A translation matrix T is then
+        //    prepended (H_adj = T·H) so that the top-left corner of the bounding
+        //    box lands at (0,0) in the output, and the canvas is sized accordingly.
         Map.entry("warpperspective", (src, params) -> {
             double m00 = ((Number) params.getOrDefault("m00", 1.0)).doubleValue();
             double m01 = ((Number) params.getOrDefault("m01", 0.0)).doubleValue();
@@ -140,16 +146,55 @@ public class GeometricTransformEngine {
             double m20 = ((Number) params.getOrDefault("m20", 0.0)).doubleValue();
             double m21 = ((Number) params.getOrDefault("m21", 0.0)).doubleValue();
             double m22 = ((Number) params.getOrDefault("m22", 1.0)).doubleValue();
-            int outW   = ((Number) params.getOrDefault("outWidth",  src.cols())).intValue();
-            int outH   = ((Number) params.getOrDefault("outHeight", src.rows())).intValue();
             int interp = interpolationFlag((String) params.getOrDefault("interpolation", "linear"));
-            int border = borderMode((String) params.getOrDefault("borderMode", "constant"));
+            // Default to BORDER_REPLICATE: when perspective projection places corners
+            // outside the source canvas, replicating the nearest edge pixel prevents
+            // the white-constant-fill "empty space" tear artefact at the corners.
+            int border = borderMode((String) params.getOrDefault("borderMode", "replicate"));
+
+            // Project the 4 source corners through H to find the output bounding box
+            double[][] srcCorners = {
+                {0,               0              },
+                {src.cols() - 1,  0              },
+                {src.cols() - 1,  src.rows() - 1 },
+                {0,               src.rows() - 1 }
+            };
+            double minX = Double.MAX_VALUE,  minY = Double.MAX_VALUE;
+            double maxX = -Double.MAX_VALUE, maxY = -Double.MAX_VALUE;
+            for (double[] c : srcCorners) {
+                double wx = m00 * c[0] + m01 * c[1] + m02;
+                double wy = m10 * c[0] + m11 * c[1] + m12;
+                double w  = m20 * c[0] + m21 * c[1] + m22;
+                if (Math.abs(w) < 1e-10) continue;   // degenerate point – skip
+                double px = wx / w;
+                double py = wy / w;
+                minX = Math.min(minX, px);  maxX = Math.max(maxX, px);
+                minY = Math.min(minY, py);  maxY = Math.max(maxY, py);
+            }
+            // Canvas large enough to hold the full warped document
+            int canvasW = (int) Math.ceil(maxX - minX) + 1;
+            int canvasH = (int) Math.ceil(maxY - minY) + 1;
+            // Respect any explicit lower-bound the caller passed
+            canvasW = Math.max(canvasW, ((Number) params.getOrDefault("outWidth",  canvasW)).intValue());
+            canvasH = Math.max(canvasH, ((Number) params.getOrDefault("outHeight", canvasH)).intValue());
+
+            // Build H_adj = T · H  where T translates by (-minX, -minY)
+            // so the top-left warped corner maps to (0, 0) on the canvas
             Mat H = new Mat(3, 3, CvType.CV_64F);
             H.put(0, 0, m00, m01, m02,
                         m10, m11, m12,
                         m20, m21, m22);
+            Mat T = Mat.eye(3, 3, CvType.CV_64F);
+            T.put(0, 2, -minX);
+            T.put(1, 2, -minY);
+            Mat H_adj = new Mat();
+            Core.gemm(T, H, 1.0, new Mat(), 0.0, H_adj);
+            T.release();
+            H.release();
+
             Mat dst = new Mat();
-            Imgproc.warpPerspective(src, dst, H, new Size(outW, outH), interp, border, Scalar.all(0));
+            Imgproc.warpPerspective(src, dst, H_adj, new Size(canvasW, canvasH), interp, border, Scalar.all(0));
+            H_adj.release();
             return dst;
         }),
 
@@ -202,30 +247,55 @@ public class GeometricTransformEngine {
         }),
 
         // 12. Barrel / pincushion radial distortion via remap
-        //     params: k1 (double, 0.3 – positive=barrel, negative=pincushion),
-        //             k2 (double, 0.0 – higher-order correction)
+        //     params: k1 (double, 0.01 – positive=barrel, negative=pincushion;
+        //                         keep in [0.001, 0.02] to prevent geometry collapse),
+        //             k2 (double, 0.0 – higher-order Brown-Conrady correction)
+        //
+        //     Fix 1 – Inverse Mapping:
+        //       For every destination pixel (x_dst, y_dst) we compute the source
+        //       (undistorted) coordinate via x_src = x_dst / (1 + k1·r² + k2·r⁴).
+        //       This avoids forward-mapping holes where destination pixels are skipped.
+        //
+        //     Fix 2 – Radial Distortion Bound Check:
+        //       r is normalised to [0,1] using the half-diagonal of the image so that
+        //       corner pixels reach r=1 and no pixel ever exceeds it.  The denominator
+        //       (1 + k1·r² + k2·r⁴) is guarded against ≤ 0 to prevent geometry
+        //       collapse when aggressive k coefficients are supplied.
         Map.entry("remap", (src, params) -> {
-            double k1   = ((Number) params.getOrDefault("k1", 0.3)).doubleValue();
+            double k1   = ((Number) params.getOrDefault("k1", 0.01)).doubleValue();
             double k2   = ((Number) params.getOrDefault("k2", 0.0)).doubleValue();
             int    cols = src.cols();
             int    rows = src.rows();
-            double cx   = cols / 2.0;
-            double cy   = rows / 2.0;
-            double norm = Math.max(cx, cy);
+            double cx        = cols / 2.0;
+            double cy        = rows / 2.0;
+            // Normalise r to [0,1] over the half-diagonal so corner pixels reach r=1
+            double maxRadius = Math.hypot(cols, rows) / 2.0;
             Mat mapX = new Mat(rows, cols, CvType.CV_32F);
             Mat mapY = new Mat(rows, cols, CvType.CV_32F);
             for (int y = 0; y < rows; y++) {
                 for (int x = 0; x < cols; x++) {
-                    double nx     = (x - cx) / norm;
-                    double ny     = (y - cy) / norm;
-                    double r2     = nx * nx + ny * ny;
-                    double factor = 1.0 + k1 * r2 + k2 * r2 * r2;
-                    mapX.put(y, x, (float) (cx + nx * factor * norm));
-                    mapY.put(y, x, (float) (cy + ny * factor * norm));
+                    double dx    = x - cx;
+                    double dy    = y - cy;
+                    // r normalised to [0,1]: keeps denominator near 1 at the centre
+                    double rNorm = Math.hypot(dx, dy) / maxRadius;
+                    double r2    = rNorm * rNorm;
+                    // Inverse-mapping: x_src = x_dst / (1 + k1·r² + k2·r⁴)
+                    double denom  = 1.0 + k1 * r2 + k2 * r2 * r2;
+                    // Safety guard: collapse / inversion prevention
+                    if (denom <= 0.0) denom = 1.0;
+                    double factor = 1.0 / denom;
+                    // Clamp to valid pixel range — edge replication prevents
+                    // BORDER_CONSTANT white/black fill from appearing at the
+                    // outer corners when strong k1 values push the map OOB.
+                    float xSrc = (float) Math.max(0.0, Math.min(cols - 1, cx + dx * factor));
+                    float ySrc = (float) Math.max(0.0, Math.min(rows - 1, cy + dy * factor));
+                    mapX.put(y, x, xSrc);
+                    mapY.put(y, x, ySrc);
                 }
             }
             Mat dst = new Mat();
-            Imgproc.remap(src, dst, mapX, mapY, Imgproc.INTER_LINEAR);
+            Imgproc.remap(src, dst, mapX, mapY, Imgproc.INTER_LINEAR,
+                          Core.BORDER_REPLICATE, Scalar.all(255));
             return dst;
         }),
 

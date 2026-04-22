@@ -34,6 +34,9 @@ public class ActionWithOpenCVTools {
     private final ProbabilisticBorderEngine probabilisticBorderEngine;
     private final FingerprintEngine fingerprintEngine;
     private final ScanSimulationEngine scanSimulationEngine;
+    private final KeystoneEngine keystoneEngine;
+    private final FlatPhotoEngine flatPhotoEngine;
+    private final FlatRealPhotoEngine flatRealPhotoEngine;
     private final ObjectMapper objectMapper;
 
     private static final Logger log = LoggerFactory.getLogger(ActionWithOpenCVTools.class);
@@ -51,6 +54,9 @@ public class ActionWithOpenCVTools {
             ProbabilisticBorderEngine probabilisticBorderEngine,
             FingerprintEngine fingerprintEngine,
             ScanSimulationEngine scanSimulationEngine,
+            KeystoneEngine keystoneEngine,
+            FlatPhotoEngine flatPhotoEngine,
+            FlatRealPhotoEngine flatRealPhotoEngine,
             ObjectMapper objectMapper) {
         this.redisTemplate              = redisTemplate;
         this.smoothingEngine            = smoothingEngine;
@@ -65,6 +71,9 @@ public class ActionWithOpenCVTools {
         this.probabilisticBorderEngine  = probabilisticBorderEngine;
         this.fingerprintEngine          = fingerprintEngine;
         this.scanSimulationEngine       = scanSimulationEngine;
+        this.keystoneEngine             = keystoneEngine;
+        this.flatPhotoEngine            = flatPhotoEngine;
+        this.flatRealPhotoEngine        = flatRealPhotoEngine;
         this.objectMapper               = objectMapper;
     }
 
@@ -88,6 +97,9 @@ public class ActionWithOpenCVTools {
                     - 'probabilisticborder' : probability-density-driven border damage engine
                     - 'fingerprint'         : procedural Gabor-based fingerprint overlay engine
                     - 'scansimulation'       : homography-based scan tilt simulation with projective shadowing and border noise
+                    - 'keystone'             : physics-based projective keystone distortion with camera intrinsic model and depth-of-field blur
+                    - 'flatphoto'            : flat-image photo simulation (affine shear + luminance gradient + tilt-shift blur + chromatic aberration + grain)
+                    - 'flatrealphoto'         : realistic 3D pinhole camera simulation (perspective homography + barrel distortion + Gaussian vignetting + depth-of-field ramp blur)
                     """) String category,
             @ToolParam(description = """
                     The exact operation key (lower-case) to apply within the chosen category.
@@ -103,6 +115,9 @@ public class ActionWithOpenCVTools {
                     probabilisticborder  : probabilisticborder
                     fingerprint          : fingerprint
                     scansimulation       : scanrotate | scandeskew
+                    keystone             : keystone
+                    flatphoto            : flatphoto
+                    flatrealphoto        : flatrealphoto
                     """) String operationName,
             @ToolParam(description = """
                     JSON object of parameters for the chosen operation. Use {} for all defaults.
@@ -176,6 +191,9 @@ public class ActionWithOpenCVTools {
                 case "probabilisticborder" -> probabilisticBorderEngine.applyOperation(operationName, src, params);
                 case "fingerprint"         -> fingerprintEngine.applyOperation(operationName, src, params);
                 case "scansimulation"      -> scanSimulationEngine.applyOperation(operationName, src, params);
+                case "keystone"            -> keystoneEngine.applyOperation(operationName, src, params);
+                case "flatphoto"           -> flatPhotoEngine.applyOperation(operationName, src, params);
+                case "flatrealphoto"       -> flatRealPhotoEngine.applyOperation(operationName, src, params);
                 default -> {
                     log.error("Unknown category: {}", category);
                     yield src;

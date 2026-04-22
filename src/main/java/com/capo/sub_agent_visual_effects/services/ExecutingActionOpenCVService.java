@@ -46,6 +46,5 @@ public class ExecutingActionOpenCVService {
 				ImageRefContextHolder.clear();
 			}
 		});
-	}
-	
+	} 
 }

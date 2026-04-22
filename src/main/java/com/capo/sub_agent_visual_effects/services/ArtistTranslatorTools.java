@@ -1,5 +1,7 @@
 package com.capo.sub_agent_visual_effects.services;
 
+import java.util.concurrent.ThreadLocalRandom;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -12,6 +14,8 @@ import com.capo.sub_agent_visual_effects.utils.ToolCallGuard;
 
 @Service
 public class ArtistTranslatorTools {
+
+	private static final String[] SCENARIO_IDS = { "A", "B", "C", "D", "E", "F" };
 
 	private final ToolCallGuard guard = new ToolCallGuard();
 	private final ChatClient chatClient;
@@ -52,8 +56,14 @@ public class ArtistTranslatorTools {
 		if (!guard.isFirstCall()) {
 			return guard.getCachedResult();
 		}
+		String scenarioId = SCENARIO_IDS[ThreadLocalRandom.current().nextInt(SCENARIO_IDS.length)];
+		String scenarioDirective = "\n\n---\n⚠️ MANDATORY OVERRIDE — SCENARIO PRE-SELECTED BY THE SYSTEM:\n" +
+				"You MUST use Scenario **" + scenarioId + "** from the scenario pool for this call. " +
+				"Do NOT pick a different scenario regardless of the user's phrasing. " +
+				"If Scenario " + scenarioId + " is Scenario A and the user did not specify top-left lighting, " +
+				"treat it as an exception granted for this call only.\n---\n";
 		String result = this.chatClient.prompt()
-				.messages(new SystemMessage(systemPrompt))
+				.messages(new SystemMessage(systemPrompt + scenarioDirective))
 				.user(prompt)
 				.call()
 				.content();
